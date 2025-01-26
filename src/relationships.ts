@@ -2,7 +2,7 @@ import { Node } from './decorators';
 import { Connection } from './connection';
 import { Session } from 'neo4j-driver';
 
-export interface RelationshipMetadata {
+export interface RelationshipMetadata<T = any> {
   name: string;
   type: string;
   direction?: 'OUTGOING' | 'INCOMING' | 'BOTH';
@@ -16,10 +16,21 @@ export interface PropertyMetadata {
   defaultValue?: any;
 }
 
-export interface RelationshipConfig<T = any> {
+type PropertyType<T> = T extends 'string' ? string :
+  T extends 'number' ? number :
+  T extends 'boolean' ? boolean :
+  T extends 'date' ? Date : never;
+
+type RelationshipProperties<T extends PropertyMetadata[]> = {
+  [P in T[number] as P['name']]: P['required'] extends true
+    ? PropertyType<P['type']>
+    : PropertyType<P['type']> | undefined;
+};
+
+export interface RelationshipConfig<T extends PropertyMetadata[] = PropertyMetadata[]> {
   type: string;
   direction?: 'OUTGOING' | 'INCOMING' | 'BOTH';
-  properties?: Partial<T>;
+  properties?: RelationshipProperties<T>;
 }
 
 export interface RelationshipQueryOptions {
@@ -52,7 +63,7 @@ export class RelationshipManager {
   async createRelationship<T, U, P = any>(
     sourceNode: T,
     targetNode: U,
-    config: RelationshipConfig<P>
+    config: RelationshipConfig<P extends PropertyMetadata[] ? P : PropertyMetadata[]>
   ): Promise<void> {
     const session = this.getSession();
     const sourceMetadata = Reflect.getMetadata('nodeLabel', (sourceNode as object).constructor);

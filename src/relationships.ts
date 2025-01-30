@@ -27,10 +27,10 @@ type RelationshipProperties<T extends PropertyMetadata[]> = {
     : PropertyType<P['type']> | undefined;
 };
 
-export interface RelationshipConfig<T extends PropertyMetadata[] = PropertyMetadata[]> {
+export interface RelationshipConfig<P extends PropertyMetadata[] = PropertyMetadata[]> {
   type: string;
   direction?: 'OUTGOING' | 'INCOMING' | 'BOTH';
-  properties?: RelationshipProperties<T>;
+  properties?: RelationshipProperties<P>;
 }
 
 export interface RelationshipQueryOptions {
@@ -40,12 +40,73 @@ export interface RelationshipQueryOptions {
   order?: 'ASC' | 'DESC';
 }
 
+export interface BidirectionalRelationshipConfig extends RelationshipConfig {
+  inverse?: {
+    type: string;
+    properties?: Record<string, any>;
+  };
+}
+
+export interface PathTraversalOptions extends RelationshipQueryOptions {
+  maxDepth?: number;
+  relationshipTypes?: string[];
+  direction?: 'OUTGOING' | 'INCOMING' | 'BOTH';
+  nodeLabels?: string[];
+}
+
 export class RelationshipManager {
   private readonly connection: Connection;
   private static relationshipMetadata = new Map<string, RelationshipMetadata>();
 
   constructor() {
     this.connection = Connection.getInstance();
+  }
+
+  private validateProperties(properties: any, metadata: PropertyMetadata[]): void {
+    for (const prop of metadata) {
+      const value = properties[prop.name];
+
+      // Check for required properties
+      if (prop.required && (value === undefined || value === null)) {
+        throw new Error(`Required property '${prop.name}' is missing`);
+      }
+
+      // Skip validation for undefined or null values if property is not required
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      // Validate property type
+      switch (prop.type) {
+        case 'string':
+          if (typeof value !== 'string') {
+            throw new Error(`Property '${prop.name}' must be a string, got ${typeof value}`);
+          }
+          break;
+        case 'number':
+          if (typeof value !== 'number' || isNaN(value)) {
+            throw new Error(`Property '${prop.name}' must be a valid number, got ${typeof value}`);
+          }
+          break;
+        case 'boolean':
+          if (typeof value !== 'boolean') {
+            throw new Error(`Property '${prop.name}' must be a boolean, got ${typeof value}`);
+          }
+          break;
+        case 'date':
+          if (!(value instanceof Date) || isNaN(value.getTime())) {
+            throw new Error(`Property '${prop.name}' must be a valid Date object`);
+          }
+          break;
+        default:
+          throw new Error(`Unsupported property type: ${prop.type}`);
+      }
+
+      // Apply default value if provided and value is undefined
+      if (value === undefined && prop.defaultValue !== undefined) {
+        properties[prop.name] = prop.defaultValue;
+      }
+    }
   }
 
   static registerRelationship(metadata: RelationshipMetadata): void {
@@ -92,31 +153,90 @@ export class RelationshipManager {
     }
   }
 
-  private validateProperties(properties: any, metadata: PropertyMetadata[]): void {
-    for (const prop of metadata) {
-      if (prop.required && !(prop.name in properties)) {
-        throw new Error(`Required property '${prop.name}' is missing`);
+  async createBidirectionalRelationship<T, U, P = any>(
+    sourceNode: T,
+    targetNode: U,
+    config: BidirectionalRelationshipConfig
+  ): Promise<void> {
+    const session = this.getSession();
+    const sourceMetadata = Reflect.getMetadata('nodeLabel', (sourceNode as object).constructor);
+    const targetMetadata = Reflect.getMetadata('nodeLabel', (targetNode as object).constructor);
+
+    try {
+      const cypher = `
+        MATCH (source:${sourceMetadata}), (target:${targetMetadata})
+        WHERE ID(source) = toInteger($sourceId) AND ID(target) = toInteger($targetId)
+        CREATE (source)-[r1:${config.type} $props]->(target)
+        ${config.inverse ? `CREATE (target)-[r2:${config.inverse.type} $inverseProps]->(source)` : ''}
+        RETURN r1${config.inverse ? ', r2' : ''}
+      `;
+
+      const metadata = RelationshipManager.getRelationshipMetadata(config.type);
+      if (metadata) {
+        this.validateProperties(config.properties || {}, metadata.properties || []);
       }
 
-      if (prop.name in properties) {
-        const value = properties[prop.name];
-        if (value !== undefined && value !== null) {
-          switch (prop.type) {
-            case 'string':
-              if (typeof value !== 'string') throw new Error(`Property '${prop.name}' must be a string`);
-              break;
-            case 'number':
-              if (typeof value !== 'number') throw new Error(`Property '${prop.name}' must be a number`);
-              break;
-            case 'boolean':
-              if (typeof value !== 'boolean') throw new Error(`Property '${prop.name}' must be a boolean`);
-              break;
-            case 'date':
-              if (!(value instanceof Date)) throw new Error(`Property '${prop.name}' must be a Date`);
-              break;
-          }
-        }
-      }
+      await session.run(cypher, {
+        sourceId: (sourceNode as any).id,
+        targetId: (targetNode as any).id,
+        props: config.properties || {},
+        inverseProps: config.inverse?.properties || {}
+      });
+    } finally {
+      await session.close();
+    }
+  }
+
+  async traversePath<T>(
+    startNode: T,
+    options: PathTraversalOptions = {}
+  ): Promise<Array<{
+    nodes: Array<{ id: string; labels: string[]; properties: any }>;
+    relationships: Array<{ type: string; properties: any }>
+  }>> {
+    const session = this.getSession();
+    const startNodeMetadata = Reflect.getMetadata('nodeLabel', (startNode as object).constructor);
+
+    try {
+      const relationshipDirection = options.direction === 'INCOMING' ? '<-' : 
+                                   options.direction === 'BOTH' ? '-' : 
+                                   '->';
+      const relationshipPattern = options.relationshipTypes?.length ?
+        `[*${options.maxDepth ? `..${options.maxDepth}` : ''} r:${options.relationshipTypes.join('|')}]` :
+        `[*${options.maxDepth ? `..${options.maxDepth}` : ''} r]`;
+      
+      const nodePattern = options.nodeLabels?.length ?
+        `(target:${options.nodeLabels.join('|')})` :
+        '(target)';
+
+      const cypher = `
+        MATCH path = (source:${startNodeMetadata})${relationshipDirection}${relationshipPattern}${relationshipDirection}${nodePattern}
+        WHERE ID(source) = toInteger($sourceId)
+        RETURN path
+        ${options.orderBy ? `ORDER BY target.${options.orderBy} ${options.order || 'ASC'}` : ''}
+        ${options.limit ? `LIMIT ${options.limit}` : ''}
+      `;
+
+      const result = await session.run(cypher, {
+        sourceId: (startNode as any).id
+      });
+
+      return result.records.map(record => {
+        const path = record.get('path');
+        return {
+          nodes: path.segments.map((segment: any) => ({
+            id: segment.end.identity.toString(),
+            labels: segment.end.labels,
+            properties: segment.end.properties
+          })),
+          relationships: path.segments.map((segment: any) => ({
+            type: segment.relationship.type,
+            properties: segment.relationship.properties
+          }))
+        };
+      });
+    } finally {
+      await session.close();
     }
   }
 
@@ -128,14 +248,14 @@ export class RelationshipManager {
   ): Promise<Array<{ id: string } & P>> {
     const session = this.getSession();
     const sourceMetadata = Reflect.getMetadata('nodeLabel', (sourceNode as object).constructor);
-
+  
     try {
       const orderClause = options.orderBy
         ? `ORDER BY target.${options.orderBy} ${options.order || 'ASC'}`
         : '';
       const limitClause = options.limit ? `LIMIT ${options.limit}` : '';
       const skipClause = options.skip ? `SKIP ${options.skip}` : '';
-
+  
       const cypher = `
         MATCH (source:${sourceMetadata})-[r:${relationshipType}]->(target:${targetLabel})
         WHERE ID(source) = toInteger($sourceId)
@@ -144,11 +264,11 @@ export class RelationshipManager {
         ${skipClause}
         ${limitClause}
       `;
-
+  
       const result = await session.run(cypher, {
         sourceId: (sourceNode as any).id
       });
-
+  
       return result.records.map(record => ({
         ...record.get('target').properties,
         id: record.get('targetId').toString(),
@@ -158,7 +278,6 @@ export class RelationshipManager {
       await session.close();
     }
   }
-
   async deleteRelationship<T, U>(
     sourceNode: T,
     targetNode: U,
@@ -167,14 +286,14 @@ export class RelationshipManager {
     const session = this.getSession();
     const sourceMetadata = Reflect.getMetadata('nodeLabel', (sourceNode as object).constructor);
     const targetMetadata = Reflect.getMetadata('nodeLabel', (targetNode as object).constructor);
-
+  
     try {
       const cypher = `
         MATCH (source:${sourceMetadata})-[r:${relationshipType}]->(target:${targetMetadata})
         WHERE ID(source) = toInteger($sourceId) AND ID(target) = toInteger($targetId)
         DELETE r
       `;
-
+  
       await session.run(cypher, {
         sourceId: (sourceNode as any).id,
         targetId: (targetNode as any).id
@@ -184,3 +303,6 @@ export class RelationshipManager {
     }
   }
 }
+
+
+

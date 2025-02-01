@@ -19,7 +19,11 @@ export interface PropertyMetadata {
 type PropertyType<T> = T extends 'string' ? string :
   T extends 'number' ? number :
   T extends 'boolean' ? boolean :
-  T extends 'date' ? Date : never;
+  T extends 'date' ? Date :
+  T extends 'timestamp' ? number :
+  T extends 'datetime' ? Date :
+  T extends 'buffer' ? Buffer :
+  T extends string ? any : never;
 
 type RelationshipProperties<T extends PropertyMetadata[]> = {
   [P in T[number] as P['name']]: P['required'] extends true

@@ -11,8 +11,13 @@ export interface PropertyMetadata {
   name?: string;
   required?: boolean;
   default?: any;
-  type?: 'string' | 'number' | 'boolean' | 'date' | 'neo4j_internal_id';
+  type?: 'string' | 'number' | 'boolean' | 'date' | 'timestamp' | 'datetime' | 'buffer' | 'neo4j_internal_id' | string;
   readOnly?: boolean;
+  customType?: {
+    serialize?: (value: any) => any;
+    deserialize?: (value: any) => any;
+    validate?: (value: any) => boolean | string;
+  };
 }
 
 export function Node(label: string) {

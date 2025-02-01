@@ -26,15 +26,24 @@ export class Connection {
     }
 
     try {
-     
+      // Use the URI as provided without modification
       this.driver = createDriver(
         config.uri,
-        auth.basic(config.username, config.password)
+        auth.basic(config.username, config.password),
+        // {
+        //   maxConnectionPoolSize: 50,
+        //   connectionTimeout: 30000,
+        //   maxTransactionRetryTime: 30000,
+        //   encrypted: true,
+        //   trust: 'TRUST_ALL_CERTIFICATES',
+          
+        // }
       );
 
       // Verify connection
+      // await this.driver.verifyConnectivity();
       const info = await this.driver.getServerInfo();
-      
+      console.log({info})
     } catch (error) {
       throw new Error(`Failed to connect to Neo4j: ${error}`);
     }

@@ -4,21 +4,18 @@ import { User } from './entities/user.entity';
 import { Post } from './entities/post.entity';
 import dotenv from 'dotenv'
 
-
-
-
 dotenv.config()
 async function main() {
   // Initialize connection
-  const uri = process.env.NEO4J_HOST || ""
-  const user = process.env.NEO4J_USER || ""
-  const pass = process.env.NEO4J_PASSWORD || ""
-  
+  const uri = process.env.NEO4J_HOST || "neo4j+s://demo.neo4jlabs.com:7687";
+  const user = process.env.NEO4J_USER || "neo4j";
+  const pass = process.env.NEO4J_PASSWORD || "password";
   
   const config: ConnectionConfig = {
-    uri: uri!,
-    username: user!,
-    password: pass!
+    uri: "neo4j://69bf8d54.databases.neo4j.io",
+    username: "neo4j",
+    password: "RL3HHINIkj9QYugy74h-eTiebkl2zSdtfBidXEss4us",
+    database: 'neo4j'
   };
 
   try {
@@ -49,27 +46,16 @@ async function main() {
     const foundUser = await userRepo.findById(user.id);
     console.log('Found user:', foundUser);
 
-    // Update post
-    const updatedPost = await postRepo.update(post.id, {
-      title: 'Updated Title'
-    });
-    console.log('Updated post:', updatedPost);
+    // Find post by ID
+    const foundPost = await postRepo.findById(post.id);
+    console.log('Found post:', foundPost);
 
-    // Delete post
-    await postRepo.delete(post.id);
-    console.log('Post deleted successfully');
-
-    // Cleanup
-    await userRepo.delete(user.id);
-    console.log('User deleted successfully');
+    // Disconnect
+    await connection.disconnect();
   } catch (error) {
     console.error('Error:', error);
-  } finally {
-    // Disconnect from Neo4j
-    const connection = Connection.getInstance();
-    await connection.disconnect();
+    process.exit(1);
   }
 }
 
-// Run the example
-main().catch(console.error);
+main();

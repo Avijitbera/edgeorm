@@ -11,9 +11,25 @@ export interface RelationshipMetadata<T = any> {
 
 export interface PropertyMetadata {
   name: string;
-  type: 'string' | 'number' | 'boolean' | 'date';
+  type: 'string' | 'number' | 'boolean' | 'date' | 'array' | 'object' | 'custom';
   required?: boolean;
   defaultValue?: any;
+  arrayType?: 'string' | 'number' | 'boolean' | 'date';
+  objectSchema?: Record<string, PropertyMetadata>;
+  customType?: {
+    serialize?: (value: any) => any;
+    deserialize?: (value: any) => any;
+    validate?: (value: any) => boolean | string;
+  };
+  constraints?: {
+    minLength?: number;
+    maxLength?: number;
+    min?: number;
+    max?: number;
+    pattern?: string;
+    enum?: any[];
+    custom?: (value: any) => boolean | string;
+  };
 }
 
 type PropertyType<T> = T extends 'string' ? string :
@@ -86,10 +102,32 @@ export class RelationshipManager {
           if (typeof value !== 'string') {
             throw new Error(`Property '${prop.name}' must be a string, got ${typeof value}`);
           }
+          if (prop.constraints) {
+            if (prop.constraints.minLength && value.length < prop.constraints.minLength) {
+              throw new Error(`Property '${prop.name}' must be at least ${prop.constraints.minLength} characters long`);
+            }
+            if (prop.constraints.maxLength && value.length > prop.constraints.maxLength) {
+              throw new Error(`Property '${prop.name}' must be at most ${prop.constraints.maxLength} characters long`);
+            }
+            if (prop.constraints.pattern && !new RegExp(prop.constraints.pattern).test(value)) {
+              throw new Error(`Property '${prop.name}' must match pattern ${prop.constraints.pattern}`);
+            }
+            if (prop.constraints.enum && !prop.constraints.enum.includes(value)) {
+              throw new Error(`Property '${prop.name}' must be one of: ${prop.constraints.enum.join(', ')}`);
+            }
+          }
           break;
         case 'number':
           if (typeof value !== 'number' || isNaN(value)) {
             throw new Error(`Property '${prop.name}' must be a valid number, got ${typeof value}`);
+          }
+          if (prop.constraints) {
+            if (prop.constraints.min !== undefined && value < prop.constraints.min) {
+              throw new Error(`Property '${prop.name}' must be at least ${prop.constraints.min}`);
+            }
+            if (prop.constraints.max !== undefined && value > prop.constraints.max) {
+              throw new Error(`Property '${prop.name}' must be at most ${prop.constraints.max}`);
+            }
           }
           break;
         case 'boolean':
@@ -102,6 +140,36 @@ export class RelationshipManager {
             throw new Error(`Property '${prop.name}' must be a valid Date object`);
           }
           break;
+        case 'array':
+          if (!Array.isArray(value)) {
+            throw new Error(`Property '${prop.name}' must be an array`);
+          }
+          if (prop.arrayType) {
+            for (const item of value) {
+              this.validateProperties({ value: item }, [{ ...prop, type: prop.arrayType, name: 'value' }]);
+            }
+          }
+          break;
+        case 'object':
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+            throw new Error(`Property '${prop.name}' must be an object`);
+          }
+          if (prop.objectSchema) {
+            for (const [key, schema] of Object.entries(prop.objectSchema)) {
+              this.validateProperties({ [key]: value[key] }, [schema]);
+            }
+          }
+          break;
+        case 'custom':
+          if (prop.customType?.validate) {
+            const validationResult = prop.customType.validate(value);
+            if (typeof validationResult === 'string') {
+              throw new Error(validationResult);
+            } else if (!validationResult) {
+              throw new Error(`Property '${prop.name}' failed custom validation`);
+            }
+          }
+          break;
         default:
           throw new Error(`Unsupported property type: ${prop.type}`);
       }
@@ -109,6 +177,16 @@ export class RelationshipManager {
       // Apply default value if provided and value is undefined
       if (value === undefined && prop.defaultValue !== undefined) {
         properties[prop.name] = prop.defaultValue;
+      }
+
+      // Run custom validation if provided
+      if (prop.constraints?.custom) {
+        const validationResult = prop.constraints.custom(value);
+        if (typeof validationResult === 'string') {
+          throw new Error(validationResult);
+        } else if (!validationResult) {
+          throw new Error(`Property '${prop.name}' failed custom validation`);
+        }
       }
     }
   }
@@ -243,6 +321,8 @@ export class RelationshipManager {
       await session.close();
     }
   }
+
+  
 
   async findRelatedNodes<T, P = any>(
     sourceNode: T,
